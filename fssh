@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Check if an argument is provided
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 <substring>"
+    exit 1
+fi
+
+substring=$1
+
+# Define SSH configuration file path
+SSH_CONFIG="$HOME/.ssh/config"
+
+# Extract all Host entries matching the provided substring from SSH config
+hosts=$(awk -v pattern="$substring" '$1 == "Host" && $2 ~ pattern {print $2}' "$SSH_CONFIG")
+
+# Check if any hosts are found
+if [ -z "$hosts" ]; then
+    echo "No matching hosts found."
+    exit 1
+fi
+
+# Display options for hosts
+select host in $hosts; do
+    # Check if a valid option is selected
+    if [ -n "$host" ]; then
+        # SSH into the selected host
+        ssh "$host"
+        break
+    else
+        echo "Invalid option. Please select again."
+    fi
+done
