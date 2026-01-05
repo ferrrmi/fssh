@@ -119,17 +119,15 @@ sudo apt install fzf
 ## 🛠️ Example SSH Config
 
 ```ssh
-Host jenkins-sdet-local
-    HostName 172.16.18.50
+Host jenkins-sdet-xxx
+    HostName 127.0.0.1
     User ubuntu
 
-Host qa-agent-zt
-    HostName 10.20.3.44
+Host qa-xxx-zt
+    HostName 127.0.0.1
     User root
 ```
 
 ---
 
 ## 🔥 Enjoy faster SSH access!
-
-If you want an even more advanced version (jump-host detection, key preview, filtering metadata, or TUI mode), feel free to ask.
