@@ -301,6 +301,19 @@ get_reachability_status() {
     echo "UNREACHABLE"
 }
 
+is_connectable_status() {
+    local status="$1"
+
+    case "$status" in
+        SSH-READY|ICMP-OK)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 format_host_option() {
     local host="$1"
     local status="${2:-}"
@@ -393,11 +406,32 @@ print_host_list() {
     done
 }
 
+print_actions_menu() {
+    local title="$1"
+    shift
+
+    echo
+    echo -e "${WHITE}${title}${NC}"
+    for action in "$@"; do
+        echo -e "$action"
+    done
+}
+
+read_actions_choice() {
+    local prompt_label="${1:-select}"
+    local choice
+
+    printf "%b" "${CYAN}${prompt_label}> ${NC}" >&2
+    read -r choice
+    echo "$choice"
+}
+
 prompt_new_search() {
     local new_search
 
     echo
-    read -r -p "client-search> " new_search
+    printf "%b" "${CYAN}client-search> ${NC}"
+    read -r new_search
     SUBSTRING="$new_search"
     SHOW_ALL=false
     if [ -z "$SUBSTRING" ]; then
@@ -408,8 +442,11 @@ prompt_new_search() {
 handle_post_disconnect() {
     local choice
 
-    echo
-    read -r -p "next-action [l=list, s=search, q=quit]> " choice
+    print_actions_menu "Actions:" \
+        "[l] back to current list" \
+        "[s] search again" \
+        "[q] quit"
+    choice=$(read_actions_choice "next-action")
     case "$choice" in
         l|L|"")
             return "$ACTION_SAME_LIST"
@@ -435,29 +472,14 @@ probe_host_status_to_file() {
     get_reachability_status "$host" > "$output_file" || echo "UNREACHABLE" > "$output_file"
 }
 
-build_formatted_options() {
+collect_host_statuses() {
     local -n hosts_ref=$1
-    local -n formatted_ref=$2
+    local -n statuses_ref=$2
     local tmpdir
-    local -a pending_options pids
+    local -a pids
     local i host status_file status
 
-    formatted_ref=()
-
-    if [ "$SHOW_DETAILS" != true ]; then
-        for host in "${hosts_ref[@]}"; do
-            formatted_ref+=("$(format_host_option "$host")")
-        done
-        return
-    fi
-
-    pending_options=()
-    for host in "${hosts_ref[@]}"; do
-        pending_options+=("$(format_host_option "$host" "PROBING")")
-    done
-
-    print_host_list "DISCOVERY // ${#hosts_ref[@]} MATCHED HOST(S)" "${pending_options[@]}"
-    echo -e "${GRAY}running parallel reachability probes...${NC}"
+    statuses_ref=()
 
     tmpdir=$(mktemp -d /tmp/fssh-status.XXXXXX)
     pids=()
@@ -476,16 +498,64 @@ build_formatted_options() {
         host="${hosts_ref[$i]}"
         status_file="$tmpdir/$i.status"
         status=$(cat "$status_file" 2>/dev/null || echo "UNKNOWN")
-        formatted_ref+=("$(format_host_option "$host" "$status")")
+        statuses_ref+=("$status")
     done
 
     rm -rf "$tmpdir"
-    echo
+}
+
+build_formatted_options() {
+    local -n hosts_ref=$1
+    local -n formatted_ref=$2
+    local -n statuses_ref=$3
+    local i
+
+    formatted_ref=()
+
+    for i in "${!hosts_ref[@]}"; do
+        if [ "$SHOW_DETAILS" = true ] || [ -n "${statuses_ref[$i]:-}" ]; then
+            formatted_ref+=("$(format_host_option "${hosts_ref[$i]}" "${statuses_ref[$i]:-}")")
+        else
+            formatted_ref+=("$(format_host_option "${hosts_ref[$i]}")")
+        fi
+    done
+}
+
+handle_all_hosts_unreachable() {
+    print_actions_menu "Actions:" \
+        "[r] refresh these hosts" \
+        "[s] search again" \
+        "[a] show all hosts" \
+        "[q] quit"
+
+    case "$(read_actions_choice "next-action")" in
+        r|R|"")
+            return "$ACTION_SAME_LIST"
+            ;;
+        s|S)
+            prompt_new_search
+            return "$ACTION_NEW_SEARCH"
+            ;;
+        a|A)
+            SUBSTRING=""
+            SHOW_ALL=true
+            return "$ACTION_NEW_SEARCH"
+            ;;
+        q|Q)
+            exit 0
+            ;;
+        *)
+            echo -e "${YELLOW}Invalid choice. Refreshing the current host set.${NC}"
+            return "$ACTION_SAME_LIST"
+            ;;
+    esac
 }
 
 # Interactive menu using fzf or fallback
 interactive_menu() {
     local options formatted_options selected selected_host result
+    local probed_statuses probe_everything reachable_count i
+    local reachable_options reachable_statuses unreachable_options
 
     while true; do
         mapfile -t options < <(produce_weighted_list)
@@ -499,10 +569,68 @@ interactive_menu() {
             continue
         fi
 
-        build_formatted_options options formatted_options
+        probe_everything=false
+        if [ "$SHOW_DETAILS" = true ] || [ ${#options[@]} -gt 1 ]; then
+            probe_everything=true
+        fi
+
+        probed_statuses=()
+        if [ "$probe_everything" = true ]; then
+            if [ "$SHOW_DETAILS" = true ]; then
+                build_formatted_options options formatted_options probed_statuses
+                formatted_options=()
+                for i in "${!options[@]}"; do
+                    formatted_options+=("$(format_host_option "${options[$i]}" "PROBING")")
+                done
+                print_host_list "DISCOVERY // ${#options[@]} MATCHED HOST(S)" "${formatted_options[@]}"
+                echo -e "${GRAY}running parallel reachability probes...${NC}"
+            fi
+
+            collect_host_statuses options probed_statuses
+        fi
+
+        if [ ${#options[@]} -gt 1 ]; then
+            reachable_count=0
+            reachable_options=()
+            reachable_statuses=()
+            unreachable_options=()
+
+            for i in "${!options[@]}"; do
+                if is_connectable_status "${probed_statuses[$i]:-UNREACHABLE}"; then
+                    reachable_options+=("${options[$i]}")
+                    reachable_statuses+=("${probed_statuses[$i]}")
+                    reachable_count=$((reachable_count + 1))
+                else
+                    unreachable_options+=("$(format_host_option "${options[$i]}" "${probed_statuses[$i]:-UNREACHABLE}")")
+                fi
+            done
+
+            if [ "$reachable_count" -eq 0 ]; then
+                build_formatted_options options formatted_options probed_statuses
+                print_host_list "PROBE RESULT // ${#options[@]} MATCHED, 0 REACHABLE" "${formatted_options[@]}"
+                result=0
+                handle_all_hosts_unreachable || result=$?
+                if [ "$result" -eq "$ACTION_NEW_SEARCH" ]; then
+                    continue
+                fi
+                continue
+            fi
+
+            if [ "$reachable_count" -lt "${#options[@]}" ]; then
+                echo -e "${YELLOW}${#options[@]} hosts matched, ${reachable_count} reachable. Unreachable hosts were skipped for connection.${NC}"
+                if [ "$SHOW_DETAILS" = true ] && [ ${#unreachable_options[@]} -gt 0 ]; then
+                    print_host_list "SKIPPED // UNREACHABLE HOST(S)" "${unreachable_options[@]}"
+                fi
+            fi
+
+            options=("${reachable_options[@]}")
+            probed_statuses=("${reachable_statuses[@]}")
+        fi
+
+        build_formatted_options options formatted_options probed_statuses
 
         if [ "$LIST_ONLY" = true ]; then
-            if [ "$SHOW_DETAILS" != true ]; then
+            if [ "$SHOW_DETAILS" != true ] && [ ${#probed_statuses[@]} -eq 0 ]; then
                 print_host_list "DISCOVERY // ${#options[@]} MATCHED HOST(S)" "${formatted_options[@]}"
             else
                 print_host_list "PROBE RESULT // FINAL HOST STATUS" "${formatted_options[@]}"
@@ -567,10 +695,20 @@ interactive_menu() {
 # Loop for connection attempts and reconnect logic
 attempt_connect_loop() {
     local selected_host="$1"
+    local reachability_status exit_code
+
     while true; do
         print_section_title "CONNECT"
         echo -e "${WHITE}Target${NC}    : ${CYAN}${selected_host}${NC}"
         echo -e "${WHITE}Timestamp${NC} : ${GRAY}$(get_now)${NC}"
+
+        reachability_status=$(get_reachability_status "$selected_host")
+        echo -e "${WHITE}Probe${NC}     : $(format_status_label "$reachability_status")"
+
+        if ! is_connectable_status "$reachability_status"; then
+            echo -e "${YELLOW}Host ${selected_host} is not reachable right now. Returning to host selection.${NC}"
+            return 1
+        fi
 
         # Pre-ping
         if [ "$PRE_PING" = true ]; then
@@ -598,7 +736,11 @@ attempt_connect_loop() {
         print_section_title "CONNECT-ERROR"
         echo -e "${WHITE}Exit Code${NC} : ${RED}${exit_code}${NC}"
         # offer options: try another host, retry same, or quit
-        read -r -p "retry-action [r=retry, a=back, q=quit]> " choice
+        print_actions_menu "Actions:" \
+            "[r] retry this host" \
+            "[a] back to host list" \
+            "[q] quit"
+        choice=$(read_actions_choice "retry-action")
         case "$choice" in
             r|R)
                 echo -e "${GRAY}re-queueing target ${selected_host}${NC}"
