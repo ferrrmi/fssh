@@ -39,9 +39,43 @@ SHOW_DETAILS=false
 SUBSTRING=""
 ACTION_SAME_LIST=0
 ACTION_NEW_SEARCH=10
+APP_SCREEN_ACTIVE=false
 
 get_now() {
     date '+%Y-%m-%d %H:%M:%S %Z'
+}
+
+enter_app_screen() {
+    if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+        if command -v tput >/dev/null 2>&1; then
+            tput smcup 2>/dev/null || true
+            tput clear 2>/dev/null || true
+        else
+            printf '\033[?1049h\033[H\033[2J'
+        fi
+        APP_SCREEN_ACTIVE=true
+    fi
+}
+
+refresh_app_screen() {
+    if [ "$APP_SCREEN_ACTIVE" = true ]; then
+        if command -v tput >/dev/null 2>&1; then
+            tput clear 2>/dev/null || true
+        else
+            printf '\033[H\033[2J'
+        fi
+    fi
+}
+
+exit_app_screen() {
+    if [ "$APP_SCREEN_ACTIVE" = true ]; then
+        if command -v tput >/dev/null 2>&1; then
+            tput rmcup 2>/dev/null || true
+        else
+            printf '\033[?1049l'
+        fi
+        APP_SCREEN_ACTIVE=false
+    fi
 }
 
 print_divider() {
@@ -83,6 +117,10 @@ format_status_label() {
 print_section_title() {
     local title="$1"
     echo -e "${MAGENTA}${BOLD}:: ${title}${NC}"
+}
+
+print_section_gap() {
+    echo
 }
 
 print_help() {
@@ -561,6 +599,7 @@ interactive_menu() {
     while true; do
         mapfile -t options < <(produce_weighted_list)
 
+        refresh_app_screen
         print_banner
         print_network_status
 
@@ -585,6 +624,7 @@ interactive_menu() {
                 done
                 print_host_list "DISCOVERY // ${#options[@]} MATCHED HOST(S)" "${formatted_options[@]}"
                 echo -e "${GRAY}running parallel reachability probes...${NC}"
+                print_section_gap
             fi
 
             collect_host_statuses options probed_statuses
@@ -609,6 +649,7 @@ interactive_menu() {
             if [ "$reachable_count" -eq 0 ]; then
                 build_formatted_options options formatted_options probed_statuses
                 print_host_list "PROBE RESULT // ${#options[@]} MATCHED, 0 REACHABLE" "${formatted_options[@]}"
+                print_section_gap
                 result=0
                 handle_all_hosts_unreachable || result=$?
                 if [ "$result" -eq "$ACTION_NEW_SEARCH" ]; then
@@ -619,8 +660,10 @@ interactive_menu() {
 
             if [ "$reachable_count" -lt "${#options[@]}" ]; then
                 echo -e "${YELLOW}${#options[@]} hosts matched, ${reachable_count} reachable. Unreachable hosts were skipped for connection.${NC}"
+                print_section_gap
                 if [ "$SHOW_DETAILS" = true ] && [ ${#unreachable_options[@]} -gt 0 ]; then
                     print_host_list "SKIPPED // UNREACHABLE HOST(S)" "${unreachable_options[@]}"
+                    print_section_gap
                 fi
             fi
 
@@ -762,6 +805,11 @@ attempt_connect_loop() {
 }
 
 # Main
+if [ "$LIST_ONLY" != true ]; then
+    enter_app_screen
+    trap exit_app_screen EXIT
+fi
+
 interactive_menu
 
 # End of script
