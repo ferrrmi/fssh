@@ -15,6 +15,8 @@ It is built for terminal-heavy workflows: fast host filtering, live reachability
 - Post-disconnect flow to list again, search another client, or quit
 - Optional pre-ping before SSH connect attempt
 - List-only mode for discovery without connecting
+- Focus-mode `fzf` layout by default: 90% height, scrollback-safe
+- Fullscreen alternate-screen mode is opt-in
 
 ## Installation
 
@@ -69,6 +71,19 @@ Pre-ping before SSH:
 fssh -p api
 ```
 
+Use a compact `fzf` layout:
+
+```bash
+FSSH_FZF_HEIGHT=40% fssh api
+```
+
+Opt into fullscreen redraw mode:
+
+```bash
+fssh --fullscreen api
+FSSH_FULLSCREEN=1 fssh api
+```
+
 ## Flags
 
 | Flag | Description |
@@ -80,6 +95,7 @@ fssh -p api
 | `-f` | Force `fzf` mode |
 | `-p` | Pre-ping host before SSH |
 | `-h` | Show help |
+| `--fullscreen` | Use alternate-screen mode and clear/redraw the menu |
 
 ## Example Output
 
@@ -161,3 +177,4 @@ Host jenkins-sdet-zt
 - Host usage is stored in `~/.fssh_history`
 - Host display order is influenced by prior successful connections
 - The script reads hosts from `~/.ssh/config`
+- By default, `fssh` preserves normal terminal scrollback and uses `fzf` at 90% height. Set `FSSH_FZF_HEIGHT=40%` for a compact selector, or set `FSSH_FULLSCREEN=1` / pass `--fullscreen` to use the old alternate-screen redraw behavior.

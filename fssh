@@ -8,7 +8,7 @@
 # - auto-ping before ssh (optional)
 # - reconnection logic with full menu reprint
 # - graceful fallbacks when fzf not available
-# - supports options: -i (case-insensitive), -l (list-only), -a (show-all), -d (details), -f (force fzf), -p (pre-ping), -h (help)
+# - supports options: -i (case-insensitive), -l (list-only), -a (show-all), -d (details), -f (force fzf), -p (pre-ping), -h (help), --fullscreen
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -40,6 +40,14 @@ SUBSTRING=""
 ACTION_SAME_LIST=0
 ACTION_NEW_SEARCH=10
 APP_SCREEN_ACTIVE=false
+FULLSCREEN=false
+FZF_HEIGHT="${FSSH_FZF_HEIGHT:-90%}"
+
+case "${FSSH_FULLSCREEN:-0}" in
+    1|true|TRUE|yes|YES|on|ON)
+        FULLSCREEN=true
+        ;;
+esac
 
 get_now() {
     date '+%Y-%m-%d %H:%M:%S %Z'
@@ -125,7 +133,7 @@ print_section_gap() {
 
 print_help() {
     cat <<EOF
-Usage: $(basename "$0") [-i] [-l] [-a] [-d] [-f] [-p] [-h] <substring>
+Usage: $(basename "$0") [-i] [-l] [-a] [-d] [-f] [-p] [-h] [--fullscreen] <substring>
   -i  Case-insensitive search
   -l  List matches only (don't connect)
   -a  Show all hosts
@@ -133,6 +141,7 @@ Usage: $(basename "$0") [-i] [-l] [-a] [-d] [-f] [-p] [-h] <substring>
   -f  Force fzf (fail if not available)
   -p  Pre-ping host before attempting ssh
   -h  Show this help
+  --fullscreen  Use alternate-screen mode and clear/redraw the menu
 
 This script also prints:
   - Current outbound IP address
@@ -146,6 +155,26 @@ EOF
 }
 
 # Parse args
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --fullscreen)
+            FULLSCREEN=true
+            shift
+            ;;
+        --)
+            shift
+            args+=("$@")
+            break
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${args[@]}"
+
 while getopts ":iladfph" opt; do
     case $opt in
         i) CASE_INSENSITIVE=true ;;
@@ -691,7 +720,7 @@ interactive_menu() {
 
             while true; do
                 # Fixed to use {1} for fzf natively extracting the first column without causing shell eval errors
-                selected=$(printf "%s\n" "${formatted_options[@]}" | fzf --ansi --prompt "${CYAN}fssh-select> ${NC}" --preview "awk -v h={1} '\$1==\"Host\" && \$2==h {found=1; next} found { if(\$1==\"HostName\") print \"HostName: \"\$2; if(\$1==\"User\") print \"User: \"\$2; if(\$1==\"Port\") print \"Port: \"\$2; if(\$1==\"ProxyJump\") print \"ProxyJump: \"\$2; if(\$1==\"Host\") exit }' \"$SSH_CONFIG\"" --height 40% --layout=reverse --border)
+                selected=$(printf "%s\n" "${formatted_options[@]}" | fzf --ansi --prompt "${CYAN}fssh-select> ${NC}" --preview "awk -v h={1} '\$1==\"Host\" && \$2==h {found=1; next} found { if(\$1==\"HostName\") print \"HostName: \"\$2; if(\$1==\"User\") print \"User: \"\$2; if(\$1==\"Port\") print \"Port: \"\$2; if(\$1==\"ProxyJump\") print \"ProxyJump: \"\$2; if(\$1==\"Host\") exit }' \"$SSH_CONFIG\"" --height "$FZF_HEIGHT" --layout=reverse --border)
 
                 if [ -z "$selected" ]; then
                     echo -e "${GRAY}Session cancelled.${NC}"
@@ -805,7 +834,7 @@ attempt_connect_loop() {
 }
 
 # Main
-if [ "$LIST_ONLY" != true ]; then
+if [ "$LIST_ONLY" != true ] && [ "$FULLSCREEN" = true ]; then
     enter_app_screen
     trap exit_app_screen EXIT
 fi
