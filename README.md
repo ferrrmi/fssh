@@ -9,14 +9,14 @@ It is built for terminal-heavy workflows: fast host filtering, live reachability
 - `fzf` support with preview, auto-used when available
 - Fallback numbered menu when `fzf` is not installed
 - History weighting so frequently used hosts float higher
-- Session banner with current date/time, IP address, and internet status
-- Detail mode with HostName/IP plus live host probe status
+- Ultra-clean fixed header with current time, IP address, internet status, and filter
+- Aligned host table with address, latency, and status
+- Probe result latency in milliseconds
 - Parallel reachability checks for faster status refresh
 - Post-disconnect flow to list again, search another client, or quit
 - Optional pre-ping before SSH connect attempt
 - List-only mode for discovery without connecting
-- Focus-mode `fzf` layout by default: 90% height, scrollback-safe
-- Fullscreen alternate-screen mode is opt-in
+- Scrollback-safe by default; fullscreen alternate-screen mode is opt-in
 
 ## Installation
 
@@ -71,12 +71,6 @@ Pre-ping before SSH:
 fssh -p api
 ```
 
-Use a compact `fzf` layout:
-
-```bash
-FSSH_FZF_HEIGHT=40% fssh api
-```
-
 Opt into fullscreen redraw mode:
 
 ```bash
@@ -100,57 +94,40 @@ FSSH_FULLSCREEN=1 fssh api
 ## Example Output
 
 ```text
-============================================================
-FSSH // FIELD SSH CONSOLE
-[2026-03-16 13:45:22 WIB]
-MODE   : FILTER
-QUERY  : sdet
-DETAIL : ENABLED
-============================================================
-:: SESSION
-Current IP : 172.16.21.236
-Internet   : Connected
+FSSH // 172.16.21.236 • Connected • fzf • 2026-03-16 13:45:22 WIB
+Filter: sdet
 
-:: DISCOVERY // 2 MATCHED HOST(S)
- 1) jenkins-sdet-local (172.16.18.201) [PROBING]
- 2) jenkins-sdet-zt    (10.90.1.2)      [PROBING]
-running parallel reachability probes...
+ID    HOST                     ADDRESS           LATENCY   STATUS
+[1]   jenkins-sdet-local       172.16.18.201        12ms   SSH-READY
+[2]   jenkins-sdet-zt          10.90.1.2         TIMEOUT   DOWN
 
-:: PROBE RESULT // FINAL HOST STATUS
- 1) jenkins-sdet-local (172.16.18.201) [SSH-READY]
- 2) jenkins-sdet-zt    (10.90.1.2)      [NO-ROUTE]
-
-fssh-select>
+fssh-select >
 ```
 
 After disconnect from a successful SSH session, `fssh` can continue without restarting:
 
 ```text
-:: DISCONNECT
-Target    : jenkins-sdet-local
-Timestamp : 2026-03-16 13:50:31 WIB
+Disconnected: jenkins-sdet-local (172.16.18.201)
 
-next-action [l=list, s=search, q=quit]>
+Next: [l] list [s] search [q] quit
+next > prox
 ```
 
-If you choose `s`, you can immediately search another client:
+After disconnect, typing a query at `next >` starts a new search immediately. You can also type `s` for an explicit filter prompt:
 
 ```text
-client-search>
+filter >
 ```
+
+In search prompts, `all`, `*`, `.`, or an empty filter shows every host. Type `q` at `filter >` to quit.
 
 ## Reachability Status
 
-In detail mode, `fssh` probes hosts and shows one of these statuses:
+When `fssh` probes hosts, it renders one of these table statuses:
 
 - `SSH-READY`: SSH port is reachable
-- `PORT-CLOSED`: target is up but SSH port is closed/refused
-- `NO-ROUTE`: network path to target is unavailable
-- `TIMEOUT`: target did not answer before timeout
-- `DNS-FAIL`: hostname resolution failed
 - `ICMP-OK`: ping responds, but SSH port was not confirmed
-- `UNREACHABLE`: no successful probe result
-- `PROBING`: temporary status while background checks are running
+- `DOWN`: host is unreachable, timed out, DNS failed, or SSH port is closed
 
 ## Requirements
 
@@ -177,4 +154,5 @@ Host jenkins-sdet-zt
 - Host usage is stored in `~/.fssh_history`
 - Host display order is influenced by prior successful connections
 - The script reads hosts from `~/.ssh/config`
-- By default, `fssh` preserves normal terminal scrollback and uses `fzf` at 90% height. Set `FSSH_FZF_HEIGHT=40%` for a compact selector, or set `FSSH_FULLSCREEN=1` / pass `--fullscreen` to use the old alternate-screen redraw behavior.
+- By default, `fssh` preserves normal terminal scrollback. Set `FSSH_FULLSCREEN=1` or pass `--fullscreen` to use the old alternate-screen redraw behavior.
+- `fssh` does not print or clear over remote login banners; a ParkeeOS welcome banner remains part of the successful SSH session output.

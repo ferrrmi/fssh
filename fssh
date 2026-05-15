@@ -17,9 +17,7 @@ IFS=$'\n\t'
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
 YELLOW=$'\033[1;33m'
-BLUE=$'\033[0;34m'
 CYAN=$'\033[0;36m'
-MAGENTA=$'\033[0;35m'
 GRAY=$'\033[0;90m'
 WHITE=$'\033[1;37m'
 BOLD=$'\033[1m'
@@ -41,7 +39,7 @@ ACTION_SAME_LIST=0
 ACTION_NEW_SEARCH=10
 APP_SCREEN_ACTIVE=false
 FULLSCREEN=false
-FZF_HEIGHT="${FSSH_FZF_HEIGHT:-90%}"
+SELECTOR_MODE="basic"
 
 case "${FSSH_FULLSCREEN:-0}" in
     1|true|TRUE|yes|YES|on|ON)
@@ -86,49 +84,25 @@ exit_app_screen() {
     fi
 }
 
-print_divider() {
-    printf "%b%s%b\n" "$GRAY" "============================================================" "$NC"
-}
-
 print_banner() {
-    local mode_label search_label
-
-    mode_label="FILTER"
-    search_label="${SUBSTRING:-ALL}"
-
-    if [ "$SHOW_ALL" = true ]; then
-        mode_label="ALL"
-    fi
-
-    print_divider
-    echo -e "${CYAN}${BOLD}FSSH // FIELD SSH CONSOLE${NC}"
-    echo -e "${GRAY}[$(get_now)]${NC}"
-    echo -e "${WHITE}MODE${NC}   : ${CYAN}${mode_label}${NC}"
-    echo -e "${WHITE}QUERY${NC}  : ${YELLOW}${search_label}${NC}"
-    echo -e "${WHITE}DETAIL${NC} : ${YELLOW}$([ "$SHOW_DETAILS" = true ] && echo ENABLED || echo DISABLED)${NC}"
-    print_divider
+    print_console_header
+    echo
 }
 
 format_status_label() {
-    local status="$1"
+    local raw_status="$1"
+    local status label
+
+    status=$(status_name "$raw_status")
+    label=$(status_display_text "$raw_status")
 
     case "$status" in
-        SSH-READY) printf "%b%s%b" "$GREEN" "$status" "$NC" ;;
-        ICMP-OK) printf "%b%s%b" "$CYAN" "$status" "$NC" ;;
-        PROBING) printf "%b%s%b" "$YELLOW" "$status" "$NC" ;;
-        PORT-CLOSED|TIMEOUT) printf "%b%s%b" "$YELLOW" "$status" "$NC" ;;
-        NO-ROUTE|DNS-FAIL|UNREACHABLE|UNKNOWN) printf "%b%s%b" "$RED" "$status" "$NC" ;;
-        *) printf "%s" "$status" ;;
+        SSH-READY) printf "%b%s%b" "$GREEN" "$label" "$NC" ;;
+        ICMP-OK) printf "%b%s%b" "$YELLOW" "$label" "$NC" ;;
+        PROBING) printf "%b%s%b" "$YELLOW" "$label" "$NC" ;;
+        PORT-CLOSED|TIMEOUT|NO-ROUTE|DNS-FAIL|UNREACHABLE|UNKNOWN) printf "%b%s%b" "$RED" "$label" "$NC" ;;
+        *) printf "%s" "$label" ;;
     esac
-}
-
-print_section_title() {
-    local title="$1"
-    echo -e "${MAGENTA}${BOLD}:: ${title}${NC}"
-}
-
-print_section_gap() {
-    echo
 }
 
 print_help() {
@@ -193,6 +167,12 @@ shift $((OPTIND-1))
 # Substring if provided
 if [ $# -gt 0 ]; then
     SUBSTRING="$1"
+    case "$SUBSTRING" in
+        all|ALL|All|"*"|".")
+            SUBSTRING=""
+            SHOW_ALL=true
+            ;;
+    esac
 fi
 
 # Validate files
@@ -324,53 +304,150 @@ get_host_target() {
     echo "${hn:-$host}"
 }
 
+current_millis() {
+    local now
+
+    now=$(date +%s%3N 2>/dev/null || date +%s)
+    case "$now" in
+        *N*) printf "%s000\n" "$(date +%s)" ;;
+        *) printf "%s\n" "$now" ;;
+    esac
+}
+
+emit_probe_status() {
+    local status="$1"
+    local started_at="$2"
+    local finished_at elapsed
+
+    finished_at=$(current_millis)
+    elapsed=$((finished_at - started_at))
+    if [ "$elapsed" -lt 0 ]; then
+        elapsed=0
+    fi
+
+    printf "%s|%s\n" "$status" "$elapsed"
+}
+
+status_name() {
+    local raw_status="$1"
+    printf "%s" "${raw_status%%|*}"
+}
+
+status_latency() {
+    local raw_status="$1"
+
+    if [[ "$raw_status" == *"|"* ]]; then
+        printf "%s" "${raw_status#*|}"
+    fi
+}
+
+status_display_text() {
+    local status
+
+    status=$(status_name "$1")
+    case "$status" in
+        SSH-READY) printf "SSH-READY" ;;
+        ICMP-OK) printf "ICMP-OK" ;;
+        PROBING) printf "PROBING" ;;
+        *) printf "DOWN" ;;
+    esac
+}
+
+latency_display_text() {
+    local raw_status="$1"
+    local status latency
+
+    status=$(status_name "$raw_status")
+    latency=$(status_latency "$raw_status")
+
+    case "$status" in
+        SSH-READY|ICMP-OK)
+            if [ -n "$latency" ]; then
+                printf "%sms" "$latency"
+            else
+                printf "%s" "---"
+            fi
+            ;;
+        TIMEOUT)
+            printf "TIMEOUT"
+            ;;
+        PROBING)
+            printf "%s" "---"
+            ;;
+        *)
+            printf "%s" "---"
+            ;;
+    esac
+}
+
+colorize_probe_value() {
+    local raw_status="$1"
+    local text="$2"
+    local status
+
+    status=$(status_name "$raw_status")
+    case "$status" in
+        SSH-READY) printf "%b%s%b" "$GREEN" "$text" "$NC" ;;
+        ICMP-OK) printf "%b%s%b" "$YELLOW" "$text" "$NC" ;;
+        PROBING) printf "%b%s%b" "$YELLOW" "$text" "$NC" ;;
+        PORT-CLOSED|TIMEOUT|NO-ROUTE|DNS-FAIL|UNREACHABLE|UNKNOWN) printf "%b%s%b" "$RED" "$text" "$NC" ;;
+        *) printf "%s" "$text" ;;
+    esac
+}
+
 get_reachability_status() {
     local host="$1"
-    local target port probe_output
+    local target port probe_output started_at
 
     target=$(get_host_target "$host")
     port=$(get_host_port "$host")
     port=${port:-22}
 
     if command -v nc >/dev/null 2>&1; then
-        probe_output=$(nc -z -w 1 "$target" "$port" 2>&1 >/dev/null)
-        if [ $? -eq 0 ]; then
-            echo "SSH-READY"
+        started_at=$(current_millis)
+        if probe_output=$(nc -z -w 1 "$target" "$port" 2>&1 >/dev/null); then
+            emit_probe_status "SSH-READY" "$started_at"
             return
         fi
 
         case "$probe_output" in
             *"Connection refused"*)
-                echo "PORT-CLOSED"
+                emit_probe_status "PORT-CLOSED" "$started_at"
                 return
                 ;;
             *"No route to host"*|*"Network is unreachable"*)
-                echo "NO-ROUTE"
+                emit_probe_status "NO-ROUTE" "$started_at"
                 return
                 ;;
             *"timed out"*|*"Operation timed out"*)
-                echo "TIMEOUT"
+                emit_probe_status "TIMEOUT" "$started_at"
                 return
                 ;;
             *"Name or service not known"*|*"Temporary failure in name resolution"*|*"nodename nor servname provided, or not known"*)
-                echo "DNS-FAIL"
+                emit_probe_status "DNS-FAIL" "$started_at"
                 return
                 ;;
         esac
     fi
 
     if command -v ping >/dev/null 2>&1; then
+        started_at=$(current_millis)
         if ping -c 1 -W 1 "$target" >/dev/null 2>&1; then
-            echo "ICMP-OK"
+            emit_probe_status "ICMP-OK" "$started_at"
             return
         fi
+
+        emit_probe_status "UNREACHABLE" "$started_at"
+        return
     fi
 
     echo "UNREACHABLE"
 }
 
 is_connectable_status() {
-    local status="$1"
+    local status
+
+    status=$(status_name "$1")
 
     case "$status" in
         SSH-READY|ICMP-OK)
@@ -385,26 +462,29 @@ is_connectable_status() {
 format_host_option() {
     local host="$1"
     local status="${2:-}"
-    local target rendered_status
+    local index="${3:-}"
+    local target latency_text padded_latency status_text rendered_latency rendered_status id
 
-    if [ "$SHOW_DETAILS" = true ]; then
-        target=$(get_host_target "$host")
-        if [ -n "$status" ]; then
-            rendered_status=$(format_status_label "$status")
-            printf "%s %b(%s)%b %b[%s]%b\n" "$host" "$GRAY" "${target:-unknown}" "$NC" "$BOLD" "$rendered_status" "$NC"
-        else
-            printf "%s %b(%s)%b\n" "$host" "$GRAY" "${target:-unknown}" "$NC"
-        fi
-    else
-        echo "$host"
+    id="-"
+    if [ -n "$index" ]; then
+        id="[$index]"
     fi
+
+    target=$(get_host_target "$host")
+    target=${target:-unknown}
+    latency_text=$(latency_display_text "${status:-UNKNOWN}")
+    status_text=$(status_display_text "${status:-UNKNOWN}")
+    printf -v padded_latency "%8s" "$latency_text"
+    rendered_latency=$(colorize_probe_value "${status:-UNKNOWN}" "$padded_latency")
+    rendered_status=$(colorize_probe_value "${status:-UNKNOWN}" "$status_text")
+
+    printf "%-5s %-24.24s %-16.16s %b   %b\n" "$id" "$host" "$target" "$rendered_latency" "$rendered_status"
 }
 
 extract_host_name() {
     local entry="$1"
 
-    entry="${entry%% *}"
-    echo "$entry"
+    awk '{print $2}' <<< "$entry"
 }
 
 get_current_ip() {
@@ -443,53 +523,82 @@ has_internet_connection() {
     return 1
 }
 
-print_network_status() {
-    local current_ip internet_status internet_color
+get_filter_label() {
+    if [ "$SHOW_ALL" = true ] || [ -z "$SUBSTRING" ]; then
+        printf "ALL"
+    else
+        printf "%s" "$SUBSTRING"
+    fi
+}
+
+get_internet_status_label() {
+    if has_internet_connection; then
+        printf "Connected"
+    else
+        printf "Not connected"
+    fi
+}
+
+print_console_header() {
+    local current_ip internet_status internet_color filter_label
 
     current_ip=$(get_current_ip)
-
-    if has_internet_connection; then
-        internet_status="Connected"
-        internet_color="$GREEN"
-    else
-        internet_status="Not connected"
+    internet_status=$(get_internet_status_label)
+    internet_color="$GREEN"
+    if [ "$internet_status" != "Connected" ]; then
         internet_color="$RED"
     fi
+    filter_label=$(get_filter_label)
 
-    print_section_title "SESSION"
-    echo -e "${WHITE}Current IP${NC} : ${CYAN}${current_ip}${NC}"
-    echo -e "${WHITE}Internet  ${NC} : ${internet_color}${internet_status}${NC}"
-    echo
+    printf "%bFSSH //%b %b%s%b %b•%b %b%s%b %b•%b %s %b•%b %s\n" \
+        "$CYAN$BOLD" "$NC" \
+        "$CYAN" "$current_ip" "$NC" \
+        "$GRAY" "$NC" \
+        "$internet_color" "$internet_status" "$NC" \
+        "$GRAY" "$NC" \
+        "$SELECTOR_MODE" \
+        "$GRAY" "$NC" \
+        "$(get_now)"
+    printf "Filter: %b%s%b\n" "$YELLOW" "$filter_label" "$NC"
+}
+
+build_table_header() {
+    printf "%-5s %-24s %-16s %8s   %s\n" "ID" "HOST" "ADDRESS" "LATENCY" "STATUS"
+}
+
+build_fzf_header() {
+    printf "FSSH // %s • %s • %s • %s\n" "$(get_current_ip)" "$(get_internet_status_label)" "$SELECTOR_MODE" "$(get_now)"
+    printf "Filter: %s\n\n" "$(get_filter_label)"
+    build_table_header
 }
 
 print_host_list() {
     local title="$1"
     shift
-    local i=1
+    local row
 
-    print_section_title "$title"
-    for h in "$@"; do
-        printf "%b%2d)%b %b\n" "$BLUE" "$i" "$NC" "$h"
-        ((i++))
+    print_console_header
+    echo
+    build_table_header
+    for row in "$@"; do
+        printf "%b\n" "$row"
     done
 }
 
 print_actions_menu() {
     local title="$1"
+    local IFS=" "
     shift
 
     echo
-    echo -e "${WHITE}${title}${NC}"
-    for action in "$@"; do
-        echo -e "$action"
-    done
+    printf "%b%s%b %s\n" "$WHITE" "$title" "$NC" "$*"
 }
 
 read_actions_choice() {
     local prompt_label="${1:-select}"
     local choice
 
-    printf "%b" "${CYAN}${prompt_label}> ${NC}" >&2
+    printf "%b" "${CYAN}${prompt_label} > ${NC}" >&2
     read -r choice
     echo "$choice"
 }
@@ -498,23 +607,34 @@ prompt_new_search() {
     local new_search
 
     echo
-    printf "%b" "${CYAN}client-search> ${NC}"
+    printf "%b" "${CYAN}filter > ${NC}"
     read -r new_search
-    SUBSTRING="$new_search"
-    SHOW_ALL=false
-    if [ -z "$SUBSTRING" ]; then
-        SHOW_ALL=true
+    if [[ "$new_search" =~ ^[Qq]$ ]]; then
+        exit 0
     fi
+    set_search_filter "$new_search"
+}
+
+set_search_filter() {
+    local new_search="$1"
+
+    case "$new_search" in
+        ""|all|ALL|All|"*"|".")
+            SUBSTRING=""
+            SHOW_ALL=true
+            ;;
+        *)
+            SUBSTRING="$new_search"
+            SHOW_ALL=false
+            ;;
+    esac
 }
 
 handle_post_disconnect() {
-    local choice
+    local choice search_query
 
-    print_actions_menu "Actions:" \
-        "[l] back to current list" \
-        "[s] search again" \
-        "[q] quit"
-    choice=$(read_actions_choice "next-action")
+    print_actions_menu "Next:" "[l] list" "[s] search" "[q] quit"
+    choice=$(read_actions_choice "next")
     case "$choice" in
         l|L|"")
             return "$ACTION_SAME_LIST"
@@ -523,12 +643,17 @@ handle_post_disconnect() {
             prompt_new_search
             return "$ACTION_NEW_SEARCH"
             ;;
+        s\ *|S\ *)
+            search_query="${choice#* }"
+            set_search_filter "$search_query"
+            return "$ACTION_NEW_SEARCH"
+            ;;
         q|Q)
             exit 0
             ;;
         *)
-            echo "Invalid choice. Returning to current list."
-            return "$ACTION_SAME_LIST"
+            set_search_filter "$choice"
+            return "$ACTION_NEW_SEARCH"
             ;;
     esac
 }
@@ -582,134 +707,45 @@ build_formatted_options() {
 
     for i in "${!hosts_ref[@]}"; do
         if [ "$SHOW_DETAILS" = true ] || [ -n "${statuses_ref[$i]:-}" ]; then
-            formatted_ref+=("$(format_host_option "${hosts_ref[$i]}" "${statuses_ref[$i]:-}")")
+            formatted_ref+=("$(format_host_option "${hosts_ref[$i]}" "${statuses_ref[$i]:-}" "$((i + 1))")")
         else
-            formatted_ref+=("$(format_host_option "${hosts_ref[$i]}")")
+            formatted_ref+=("$(format_host_option "${hosts_ref[$i]}" "" "$((i + 1))")")
         fi
     done
 }
 
-handle_all_hosts_unreachable() {
-    print_actions_menu "Actions:" \
-        "[r] refresh these hosts" \
-        "[s] search again" \
-        "[a] show all hosts" \
-        "[q] quit"
-
-    case "$(read_actions_choice "next-action")" in
-        r|R|"")
-            return "$ACTION_SAME_LIST"
-            ;;
-        s|S)
-            prompt_new_search
-            return "$ACTION_NEW_SEARCH"
-            ;;
-        a|A)
-            SUBSTRING=""
-            SHOW_ALL=true
-            return "$ACTION_NEW_SEARCH"
-            ;;
-        q|Q)
-            exit 0
-            ;;
-        *)
-            echo -e "${YELLOW}Invalid choice. Refreshing the current host set.${NC}"
-            return "$ACTION_SAME_LIST"
-            ;;
-    esac
-}
-
 # Interactive menu using fzf or fallback
 interactive_menu() {
-    local options formatted_options selected selected_host result
-    local probed_statuses probe_everything reachable_count i
-    local reachable_options reachable_statuses unreachable_options
+    local options formatted_options selected selected_host result choice
+    local probed_statuses
 
     while true; do
         mapfile -t options < <(produce_weighted_list)
 
         refresh_app_screen
-        print_banner
-        print_network_status
 
         if [ ${#options[@]} -eq 0 ]; then
-            echo -e "${YELLOW}No matching hosts found for query: ${SUBSTRING:-ALL}${NC}"
+            print_banner
+            echo -e "${YELLOW}No matches for:${NC} ${SUBSTRING:-ALL}"
+            echo -e "${GRAY}Type another filter, all, *, or q.${NC}"
             prompt_new_search
             continue
         fi
 
-        probe_everything=false
-        if [ "$SHOW_DETAILS" = true ] || [ ${#options[@]} -gt 1 ]; then
-            probe_everything=true
-        fi
-
         probed_statuses=()
-        if [ "$probe_everything" = true ]; then
-            if [ "$SHOW_DETAILS" = true ]; then
-                build_formatted_options options formatted_options probed_statuses
-                formatted_options=()
-                for i in "${!options[@]}"; do
-                    formatted_options+=("$(format_host_option "${options[$i]}" "PROBING")")
-                done
-                print_host_list "DISCOVERY // ${#options[@]} MATCHED HOST(S)" "${formatted_options[@]}"
-                echo -e "${GRAY}running parallel reachability probes...${NC}"
-                print_section_gap
-            fi
-
-            collect_host_statuses options probed_statuses
-        fi
-
-        if [ ${#options[@]} -gt 1 ]; then
-            reachable_count=0
-            reachable_options=()
-            reachable_statuses=()
-            unreachable_options=()
-
-            for i in "${!options[@]}"; do
-                if is_connectable_status "${probed_statuses[$i]:-UNREACHABLE}"; then
-                    reachable_options+=("${options[$i]}")
-                    reachable_statuses+=("${probed_statuses[$i]}")
-                    reachable_count=$((reachable_count + 1))
-                else
-                    unreachable_options+=("$(format_host_option "${options[$i]}" "${probed_statuses[$i]:-UNREACHABLE}")")
-                fi
-            done
-
-            if [ "$reachable_count" -eq 0 ]; then
-                build_formatted_options options formatted_options probed_statuses
-                print_host_list "PROBE RESULT // ${#options[@]} MATCHED, 0 REACHABLE" "${formatted_options[@]}"
-                print_section_gap
-                result=0
-                handle_all_hosts_unreachable || result=$?
-                if [ "$result" -eq "$ACTION_NEW_SEARCH" ]; then
-                    continue
-                fi
-                continue
-            fi
-
-            if [ "$reachable_count" -lt "${#options[@]}" ]; then
-                echo -e "${YELLOW}${#options[@]} hosts matched, ${reachable_count} reachable. Unreachable hosts were skipped for connection.${NC}"
-                print_section_gap
-                if [ "$SHOW_DETAILS" = true ] && [ ${#unreachable_options[@]} -gt 0 ]; then
-                    print_host_list "SKIPPED // UNREACHABLE HOST(S)" "${unreachable_options[@]}"
-                    print_section_gap
-                fi
-            fi
-
-            options=("${reachable_options[@]}")
-            probed_statuses=("${reachable_statuses[@]}")
-        fi
-
-        build_formatted_options options formatted_options probed_statuses
+        collect_host_statuses options probed_statuses
 
         if [ "$LIST_ONLY" = true ]; then
+            build_formatted_options options formatted_options probed_statuses
             if [ "$SHOW_DETAILS" != true ] && [ ${#probed_statuses[@]} -eq 0 ]; then
-                print_host_list "DISCOVERY // ${#options[@]} MATCHED HOST(S)" "${formatted_options[@]}"
+                print_host_list "HOSTS" "${formatted_options[@]}"
             else
-                print_host_list "PROBE RESULT // FINAL HOST STATUS" "${formatted_options[@]}"
+                print_host_list "HOSTS" "${formatted_options[@]}"
             fi
             exit 0
         fi
+
+        build_formatted_options options formatted_options probed_statuses
 
         # If fzf is available and either auto or forced
         if has_fzf || [ "$FORCE_FZF" = true ]; then
@@ -718,9 +754,9 @@ interactive_menu() {
                 exit 1
             fi
 
+            SELECTOR_MODE="fzf"
             while true; do
-                # Fixed to use {1} for fzf natively extracting the first column without causing shell eval errors
-                selected=$(printf "%s\n" "${formatted_options[@]}" | fzf --ansi --prompt "${CYAN}fssh-select> ${NC}" --preview "awk -v h={1} '\$1==\"Host\" && \$2==h {found=1; next} found { if(\$1==\"HostName\") print \"HostName: \"\$2; if(\$1==\"User\") print \"User: \"\$2; if(\$1==\"Port\") print \"Port: \"\$2; if(\$1==\"ProxyJump\") print \"ProxyJump: \"\$2; if(\$1==\"Host\") exit }' \"$SSH_CONFIG\"" --height "$FZF_HEIGHT" --layout=reverse --border)
+                selected=$(printf "%s\n" "${formatted_options[@]}" | fzf --ansi --prompt "${CYAN}fssh-select > ${NC}" --header "$(build_fzf_header)" --preview "awk -v h={2} '\$1==\"Host\" && \$2==h {found=1; next} found { if(\$1==\"HostName\") print \"HostName: \"\$2; if(\$1==\"User\") print \"User: \"\$2; if(\$1==\"Port\") print \"Port: \"\$2; if(\$1==\"ProxyJump\") print \"ProxyJump: \"\$2; if(\$1==\"Host\") exit }' \"$SSH_CONFIG\"" --height 40% --layout=reverse --border)
 
                 if [ -z "$selected" ]; then
                     echo -e "${GRAY}Session cancelled.${NC}"
@@ -736,31 +772,26 @@ interactive_menu() {
                 fi
             done
         else
-            # Fallback: menu using select and while loop (TTY required)
-            if [ "$SHOW_DETAILS" != true ]; then
-                print_host_list "DISCOVERY // ${#options[@]} MATCHED HOST(S)" "${formatted_options[@]}"
-            else
-                print_section_title "PROBE RESULT // FINAL HOST STATUS"
-            fi
-            printf -v PS3 $'\n'"${CYAN}"'fssh-select> '"${NC}"
-
+            SELECTOR_MODE="basic"
+            print_host_list "HOSTS" "${formatted_options[@]}"
             while true; do
-                select opt in "${formatted_options[@]}"; do
-                    if [[ "$REPLY" =~ ^[Qq]$ ]]; then
-                        echo -e "${GRAY}Session cancelled.${NC}"; exit 0
-                    fi
-                    if [ -z "$opt" ]; then
-                        echo -e "${RED}Invalid option. Please try again.${NC}"
-                        continue
-                    fi
-                    selected_host=$(extract_host_name "$opt")
-                    result=0
-                    attempt_connect_loop "$selected_host" || result=$?
-                    if [ "$result" -eq "$ACTION_NEW_SEARCH" ]; then
-                        break 2
-                    fi
-                    break
-                done
+                choice=$(read_actions_choice "fssh-select")
+                if [[ "$choice" =~ ^[Qq]$ ]]; then
+                    echo -e "${GRAY}Session cancelled.${NC}"
+                    exit 0
+                fi
+                if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#options[@]}" ]; then
+                    echo -e "${RED}Invalid option. Please try again.${NC}"
+                    continue
+                fi
+
+                selected_host="${options[$((choice - 1))]}"
+                result=0
+                attempt_connect_loop "$selected_host" || result=$?
+                if [ "$result" -eq "$ACTION_NEW_SEARCH" ]; then
+                    break 2
+                fi
+                break
             done
         fi
     done
@@ -769,51 +800,40 @@ interactive_menu() {
 # Loop for connection attempts and reconnect logic
 attempt_connect_loop() {
     local selected_host="$1"
-    local reachability_status exit_code
+    local reachability_status exit_code choice post_disconnect_result target_address
 
     while true; do
-        print_section_title "CONNECT"
-        echo -e "${WHITE}Target${NC}    : ${CYAN}${selected_host}${NC}"
-        echo -e "${WHITE}Timestamp${NC} : ${GRAY}$(get_now)${NC}"
+        target_address=$(get_host_target "$selected_host")
 
         reachability_status=$(get_reachability_status "$selected_host")
-        echo -e "${WHITE}Probe${NC}     : $(format_status_label "$reachability_status")"
-
         if ! is_connectable_status "$reachability_status"; then
-            echo -e "${YELLOW}Host ${selected_host} is not reachable right now. Returning to host selection.${NC}"
+            printf "%bConnection Failed:%b %s (%s) is unreachable. [%b]\n" \
+                "$RED" "$NC" "$selected_host" "$target_address" "$(format_status_label "$reachability_status")"
             return 1
         fi
 
-        # Pre-ping
         if [ "$PRE_PING" = true ]; then
             if ping_host "$selected_host"; then
-                echo -e "${WHITE}Preflight${NC} : ${GREEN}PING-OK${NC}"
+                printf "Preflight: %bPING-OK%b\n" "$GREEN" "$NC"
             else
-                echo -e "${WHITE}Preflight${NC} : ${YELLOW}PING-NO-REPLY${NC}"
+                printf "Preflight: %bPING-NO-REPLY%b\n" "$YELLOW" "$NC"
             fi
         fi
 
-        ssh "$selected_host"
-        exit_code=$?
+        printf "%bConnecting to%b %s (%s)...\n" "$YELLOW" "$NC" "$selected_host" "$target_address"
+        exit_code=0
+        ssh "$selected_host" || exit_code=$?
         if [ $exit_code -eq 0 ]; then
-            # success
-            local post_disconnect_result=0
             increment_history "$selected_host"
-            print_section_title "DISCONNECT"
-            echo -e "${WHITE}Target${NC}    : ${CYAN}${selected_host}${NC}"
-            echo -e "${WHITE}Timestamp${NC} : ${GRAY}$(get_now)${NC}"
+            post_disconnect_result=0
+            printf "%bDisconnected:%b %s (%s)\n" "$GREEN" "$NC" "$selected_host" "$target_address"
             handle_post_disconnect || post_disconnect_result=$?
             return "$post_disconnect_result"
         fi
 
-        print_section_title "CONNECT-ERROR"
-        echo -e "${WHITE}Exit Code${NC} : ${RED}${exit_code}${NC}"
-        # offer options: try another host, retry same, or quit
-        print_actions_menu "Actions:" \
-            "[r] retry this host" \
-            "[a] back to host list" \
-            "[q] quit"
-        choice=$(read_actions_choice "retry-action")
+        printf "%bConnection Failed:%b %s exited with code %s.\n" "$RED" "$NC" "$selected_host" "$exit_code"
+        print_actions_menu "Next:" "[r] retry" "[a] list" "[q] quit"
+        choice=$(read_actions_choice "retry")
         case "$choice" in
             r|R)
                 echo -e "${GRAY}re-queueing target ${selected_host}${NC}"
