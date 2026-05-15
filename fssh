@@ -606,7 +606,6 @@ read_actions_choice() {
 prompt_new_search() {
     local new_search
 
-    echo
     printf "%b" "${CYAN}filter > ${NC}"
     read -r new_search
     if [[ "$new_search" =~ ^[Qq]$ ]]; then
@@ -633,7 +632,7 @@ set_search_filter() {
 handle_post_disconnect() {
     local choice search_query
 
-    print_actions_menu "Next:" "[l] list" "[s] search" "[q] quit"
+    print_actions_menu "Next:" "[l] list" "[q] quit" "or type filter"
     choice=$(read_actions_choice "next")
     case "$choice" in
         l|L|"")

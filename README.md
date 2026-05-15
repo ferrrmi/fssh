@@ -109,13 +109,14 @@ After disconnect from a successful SSH session, `fssh` can continue without rest
 ```text
 Disconnected: jenkins-sdet-local (172.16.18.201)
 
-Next: [l] list [s] search [q] quit
+Next: [l] list [q] quit or type filter
 next > prox
 ```
 
-After disconnect, typing a query at `next >` starts a new search immediately. You can also type `s` for an explicit filter prompt:
+After disconnect, typing a query at `next >` starts a new search immediately. The `s` shortcut still opens an explicit filter prompt:
 
 ```text
+next > s
 filter >
 ```
 
